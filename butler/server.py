@@ -29,6 +29,7 @@ from .orchestrator import ConversationOrchestrator
 from .security import DeviceAuth, RateLimiter, AuditLogger, Permission
 from .monitor import MetricsCollector, AlertManager, TraceSpan, metrics
 from .diagnostics import Diagnostics
+from .voice_trigger import VoiceTrigger
 
 logger = logging.getLogger("butler.server")
 
@@ -66,6 +67,11 @@ class ButlerServer:
         logger.info(f"  STT:  {self._fmt_stt()}")
         logger.info(f"  TTS:  {self._fmt_tts()}")
         logger.info(f"  Auth: {'enabled' if self.auth else 'disabled'}")
+        # Voice trigger (唤醒词检测)
+        self.voice_trigger = VoiceTrigger()
+        self._voice_trigger_active = False
+        self._wake_audio_clients: set[str] = set()  # 浏览器音频流唤醒客户端
+        
         logger.info("=" * 50)
     
     def _fmt_stt(self) -> str:
@@ -79,6 +85,16 @@ class ButlerServer:
     
     def _fmt_tts(self) -> str:
         return "Cache → EdgeTTS → macOS say"
+
+    def _on_voice_trigger(self):
+        """语音触发回调 — 向所有客户端发送唤醒事件。"""
+        logger.info("Voice trigger fired, waking clients...")
+        for device_id, orch in self.orchestrators.items():
+            session = self.sm.get(device_id)
+            if session and session.is_idle:
+                asyncio.create_task(
+                    session.send_json({"type": "wake"})
+                )
 
     async def handle_websocket(self, ws: WebSocket):
         """处理设备 WebSocket 连接。"""
@@ -108,7 +124,7 @@ class ButlerServer:
             await session.send_json({
                 "type": "connected",
                 "device_id": device_id,
-                "version": "4.1.0",
+                "version": "4.2.0",
                 "server": "Aria 家庭助手 v4",
             })
 
@@ -123,8 +139,12 @@ class ButlerServer:
                     break
                 
                 if "bytes" in raw:
-                    # 音频帧
-                    await orchestrator.handle_audio_frame(raw["bytes"])
+                    if device_id in self._wake_audio_clients:
+                        # 唤醒词音频流 → 发送到 voice trigger 进行检测
+                        self.voice_trigger.feed_external(raw["bytes"])
+                    else:
+                        # 正常对话音频帧 → 送入 orchestror
+                        await orchestrator.handle_audio_frame(raw["bytes"])
                 elif "text" in raw:
                     try:
                         message = json.loads(raw["text"])
@@ -180,6 +200,40 @@ class ButlerServer:
             # 用户主动打断
             self.interrupt.trigger(device_id)
 
+        elif msg_type == "wake_audio_start":
+            # 浏览器开始流式上传音频用于唤醒检测
+            self._wake_audio_clients.add(device_id)
+            if not self._voice_trigger_active:
+                self.voice_trigger.on_trigger(
+                    lambda: asyncio.create_task(
+                        self._broadcast_wake()
+                    )
+                )
+                asyncio.create_task(self.voice_trigger.start_external())
+                self._voice_trigger_active = True
+                logger.info(f"[{device_id}] Wake audio streaming started")
+
+        elif msg_type == "wake_audio_stop":
+            # 浏览器停止上传音频
+            self._wake_audio_clients.discard(device_id)
+            if not self._wake_audio_clients:
+                asyncio.create_task(self.voice_trigger.stop_external())
+                self._voice_trigger_active = False
+                logger.info(f"[{device_id}] Wake audio streaming stopped")
+
+        elif msg_type == "wake":
+            enable = data.get("enable", True)
+            if enable and not self._voice_trigger_active:
+                self.voice_trigger.on_trigger(self._on_voice_trigger)
+                self.voice_trigger.set_mode("vad")
+                asyncio.create_task(self.voice_trigger.start_server_mic())
+                self._voice_trigger_active = True
+                logger.info("Voice trigger enabled (server mic)")
+            elif not enable and self._voice_trigger_active:
+                self.voice_trigger.stop_server_mic()
+                self._voice_trigger_active = False
+                logger.info("Voice trigger disabled")
+
         elif msg_type == "set_mode":
             mode = data.get("mode", "normal")
             mode_map = {
@@ -193,6 +247,7 @@ class ButlerServer:
 
     async def _cleanup(self, device_id: str, orch: ConversationOrchestrator):
         """清理设备资源。"""
+        self._wake_audio_clients.discard(device_id)
         await orch.stop()
         self.interrupt.unregister(device_id)
         self.orchestrators.pop(device_id, None)
@@ -200,6 +255,14 @@ class ButlerServer:
         logger.info(f"[{device_id}] Cleaned up")
 
     # === REST API 端点 ==
+
+    async def _broadcast_wake(self):
+        """向所有客户端广播唤醒事件。"""
+        logger.info("🚀 Broadcasting wake event to all clients")
+        for device_id, orch in self.orchestrators.items():
+            session = self.sm.get(device_id)
+            if session:
+                await session.send_json({"type": "wake"})
 
     async def handle_health(self) -> dict:
         """健康检查端点。"""
@@ -219,7 +282,7 @@ class ButlerServer:
             ],
         }
         health["tts_stats"] = self.tts.get_stats()
-        health["version"] = "4.1.0"
+        health["version"] = "4.2.0"
         return health
 
     async def handle_metrics(self) -> dict:
@@ -268,7 +331,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Aria 家庭助手 v4",
-    version="4.1.0",
+    version="4.2.0",
     lifespan=lifespan,
 )
 

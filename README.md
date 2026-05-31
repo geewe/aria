@@ -1,6 +1,6 @@
 # 🏠 Aria 家庭助手 — 全屋智能语音管家
 
-> 版本 4.1.0 · 全双工语音管线 · AI 大模型驱动 · HomeAssistant 深度集成
+> 版本 4.2.0 · 全双工语音管线 · AI 大模型驱动 · HomeAssistant 深度集成
 
 Aria 是一个接入 AI 大模型、面向全屋智能家居的语音助手系统。它能像豆包或小智 AI 一样流畅地进行自然语言交流，同时控制 HomeAssistant 中的智能设备、查询信息、执行系统任务。旨在成为家庭中**所有设备都可以交给它管**的超级大管家。
 
@@ -33,8 +33,10 @@ Aria 是一个接入 AI 大模型、面向全屋智能家居的语音助手系�
 - 命令执行：安全沙箱下的 shell 命令
 - 任务调度：定时任务管理
 
-### 🎤 语音交互
-- **浏览器语音输入**：Chrome 内置 Web Speech API，点击即说
+### 🎤 语音交互与唤醒
+- **唤醒词系统**：浏览器持续采集麦克风音频 → WebSocket 实时流 → 服务器 Porcupine/VAD 检测 → 自动录音
+- **三种唤醒模式**：Porcupine 离线唤醒词（需 Picovoice Access Key）/ VAD 能量检测（零配置）/ Auto 自动选择
+- **浏览器语音输入**：点击麦克风按钮使用 Web Speech API 识别
 - **流式 TTS 合成**：微软 EdgeTTS（在线高自然度），边合成边播放
 - **队列化音频播放**：多段 TTS 无缝衔接，不会重叠或截断
 - **macOS say 离线兜底**：在线 TTS 不可用时自动切到本地语音
@@ -70,6 +72,13 @@ Aria 是一个接入 AI 大模型、面向全屋智能家居的语音助手系�
 ## 🏗️ 系统架构
 
 ```
+┌─────────────────────────────────────┐
+│         唤醒词检测引擎               │
+│  Porcupine / VAD / 浏览器音频流     │
+│  检测到唤醒词 → {"type": "wake"}    │
+└──────────────────┬──────────────────┘
+                   │ (自动启动录音)
+                   ↓
 用户输入（语音 / 文字）
     ↓
 [WebSocket 全双工连接]
@@ -109,6 +118,7 @@ Aria 是一个接入 AI 大模型、面向全屋智能家居的语音助手系�
 | 前端 | 纯 HTML / CSS / JS，零依赖 |
 | 音频播放 | MediaSource + 队列化缓冲播放 |
 | 语音输入 | Web Speech Recognition API |
+| 唤醒词 | Porcupine / VAD 能量检测 / 浏览器音频流式唤醒 |
 | 流式字幕 | WebSocket 逐 token 推送 |
 | 网络检测 | TCP 探测 + DNS 解析 + HTTP HEAD |
 
@@ -224,6 +234,15 @@ aria/
 {"type": "ping"}
 {"type": "interrupt"}
 {"type": "vad", "state": "speech_start"}
+{"type": "wake_audio_start"}                              // 浏览器开始流式上传唤醒音频
+{"type": "wake_audio_stop"}                               // 浏览器停止上传唤醒音频
+<binary: PCM16 16000Hz mono audio frames>                 // 唤醒音频帧
+{"type": "wake", "enable": true/false}                    // 启用/禁用服务器端麦克风唤醒
+```
+
+**服务器新增消息：**
+```json
+{"type": "wake"}                                          // 服务器检测到唤醒词, 通知客户端开始录音
 ```
 
 **服务器 → 客户端消息：**
@@ -238,6 +257,7 @@ aria/
 <binary: MP3 audio chunks>
 {"type": "tts_end", "chunks": 15}
 {"type": "llm_end", "text": "好的，已打开客厅灯"}
+{"type": "wake"}                                             // 唤醒词/语音触发
 ```
 
 ### REST 端点
@@ -261,7 +281,7 @@ aria/
 
 - [ ] 本地 TTS 引擎（Piper TTS / CosyVoice 2）
 - [ ] ESP32 硬件客户端
-- [ ] 唤醒词（"Hey Aria"，Porcupine / openWakeWord）
+- [x] 唤醒词（Porcupine + VAD + 浏览器音频流）
 - [ ] 多设备协同（跨房间对话迁移）
 - [ ] 声纹识别（区分家庭成员）
 - [ ] 网络搜索集成（实时数据查询）

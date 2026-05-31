@@ -424,7 +424,11 @@ html,body{height:100%;overflow:hidden;background:var(--bg-deep);color:var(--text
     transition:all 0.3s;opacity:0.3;
 }
 #wake-toggle:hover{opacity:0.8;background:rgba(126,212,204,0.1);border-color:rgba(126,212,204,0.2)}
-#wake-toggle.active{opacity:0.8;color:var(--accent);border-color:rgba(126,212,204,0.3);box-shadow:0 0 10px rgba(126,212,204,0.1)}
+#wake-toggle.active{opacity:0.9;color:var(--accent);border-color:rgba(126,212,204,0.4);box-shadow:0 0 12px rgba(126,212,204,0.15);animation:wakePulse 2s infinite}
+@keyframes wakePulse{
+    0%,100%{box-shadow:0 0 8px rgba(126,212,204,0.1)}
+    50%{box-shadow:0 0 16px rgba(126,212,204,0.25)}
+}
 
 /* ═══ INPUT — 文字输入 (辅助) ═══ */
 #input-area{
@@ -581,6 +585,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg-deep);color:var(--text
     <button id="send-btn">发送</button>
 </div>
 <div id="wake-toggle" title="唤醒词开关">🎤</div>
+
 
 <script>
 // ═══ CONFIG ═══
@@ -826,6 +831,12 @@ function handleMsg(msg){
             removeTyping();
             break;
 
+        case 'wake':
+            // 服务器检测到唤醒词, 开始录音
+            info('✅ 已唤醒 Aria');
+            setTimeout(startRec, 200);
+            break;
+
         case 'network_status':
             // 网络状态通知
             if(msg.online){
@@ -991,6 +1002,124 @@ function esc(t){
     const d=document.createElement('div');d.textContent=t;return d.innerHTML;
 }
 
+// ═══ WAKE WORD — 浏览器端唤醒检测 (音频流模式) ═══
+// 架构: 浏览器持续采集麦克风音频 → WebSocket → 服务器 Porcupine/VAD 检测
+let wakeWordMode = false;
+let wakeAudioCtx = null;
+let wakeMicStream = null;
+let wakeScriptNode = null;
+let wakeStreaming = false;
+let wakeAudioTimer = null;
+
+function toggleWakeMode(){
+    wakeWordMode = !wakeWordMode;
+    const btn = document.getElementById('wake-toggle');
+    if(wakeWordMode){
+        btn.classList.add('active');
+        info('🔊 唤醒已开启, 说 "Aria" 或 "Computer"');
+        startWakeStreaming();
+    } else {
+        btn.classList.remove('active');
+        stopWakeStreaming();
+        info('🔇 唤醒已关闭');
+    }
+}
+
+async function startWakeStreaming(){
+    if(wakeStreaming) return;
+    
+    try {
+        // 获取麦克风权限
+        if(!wakeMicStream){
+            wakeMicStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    sampleRate: 16000,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                }
+            });
+        }
+        
+        wakeAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 16000,
+        });
+        
+        const source = wakeAudioCtx.createMediaStreamSource(wakeMicStream);
+        
+        // 使用 ScriptProcessorNode (所有浏览器支持)
+        const bufferSize = 1024;
+        wakeScriptNode = wakeAudioCtx.createScriptProcessor(bufferSize, 1, 1);
+        
+        wakeScriptNode.onaudioprocess = function(e){
+            if(!wakeStreaming || !ws || ws.readyState !== WebSocket.OPEN) return;
+            
+            const input = e.inputBuffer.getChannelData(0);
+            // 将 Float32 转换为 16-bit PCM
+            const pcm = new Int16Array(input.length);
+            for(let i = 0; i < input.length; i++){
+                const s = Math.max(-1, Math.min(1, input[i]));
+                pcm[i] = s * 32767;
+            }
+            ws.send(pcm.buffer);
+        };
+        
+        source.connect(wakeScriptNode);
+        wakeScriptNode.connect(wakeAudioCtx.destination);
+        
+        wakeStreaming = true;
+        
+        // 告诉服务器开始接收唤醒音频
+        ws.send(JSON.stringify({type: 'wake_audio_start'}));
+        
+        // 每30秒重新连接音频上下文 (防止某些浏览器进入休眠)
+        wakeAudioTimer = setInterval(() => {
+            if(wakeStreaming && wakeAudioCtx && wakeAudioCtx.state === 'suspended'){
+                wakeAudioCtx.resume();
+            }
+        }, 30000);
+        
+        console.log('[Wake] Audio streaming started');
+    } catch(e){
+        console.error('[Wake] Stream start failed:', e);
+        info('⚠ 无法开启麦克风: ' + e.message);
+        wakeWordMode = false;
+        document.getElementById('wake-toggle').classList.remove('active');
+    }
+}
+
+function stopWakeStreaming(){
+    wakeStreaming = false;
+    
+    if(wakeAudioTimer){
+        clearInterval(wakeAudioTimer);
+        wakeAudioTimer = null;
+    }
+    
+    if(wakeScriptNode){
+        wakeScriptNode.disconnect();
+        wakeScriptNode = null;
+    }
+    
+    if(wakeAudioCtx){
+        wakeAudioCtx.close().catch(()=>{});
+        wakeAudioCtx = null;
+    }
+    
+    if(wakeMicStream){
+        wakeMicStream.getTracks().forEach(t => t.stop());
+        wakeMicStream = null;
+    }
+    
+    // 告诉服务器停止接收唤醒音频
+    if(ws && ws.readyState === WebSocket.OPEN){
+        ws.send(JSON.stringify({type: 'wake_audio_stop'}));
+    }
+    
+    console.log('[Wake] Audio streaming stopped');
+}
+
 // ═══ RECORDING — 浏览器语音识别 (Chrome 内置, 离线) ═══
 const meterBars = [];
 for(let i=0;i<28;i++){
@@ -1026,7 +1155,13 @@ async function toggleMic(){
     if(!isConnected || micCooldown) return;
     micCooldown = true;
     setTimeout(() => { micCooldown = false; }, 300);
-    isRecording?stopRec():startRec();
+    if(isRecording){
+        stopRec();
+    }else{
+        // 如果唤醒音频流在运行, 先停止
+        if(wakeStreaming) stopWakeStreaming();
+        startRec();
+    }
 }
 
 async function startRec(){
@@ -1089,6 +1224,10 @@ function stopRec(){
         try{ recognition.stop(); }catch(e){}
         try{ recognition.abort(); }catch(e){}
     }
+    // 录音结束后, 如果唤醒模式开启则重启音频流
+    if(wakeWordMode && !wakeStreaming){
+        setTimeout(startWakeStreaming, 500);
+    }
 }
 
 // ═══ TEXT INPUT ═══
@@ -1121,6 +1260,34 @@ document.addEventListener('keydown',e=>{
     if(e.key==='Escape'&&isRecording)stopRec();
 });
 
+// ═══ DEBUG — 唤醒词调试面板 ═══
+// 按 D 键打开调试面板, 查看语音识别结果
+let debugPanel = null;
+document.addEventListener('keydown', e => {
+    if(e.key === 'd' && e.ctrlKey && e.shiftKey){
+        e.preventDefault();
+        if(!debugPanel){
+            debugPanel = document.createElement('div');
+            debugPanel.id = 'debug-panel';
+            debugPanel.style.cssText = 'position:fixed;z-index:999;bottom:120px;right:10px;width:300px;max-height:200px;background:rgba(0,0,0,0.9);border:1px solid rgba(126,212,204,0.3);border-radius:8px;padding:8px;font:11px monospace;color:#7ed4cc;overflow-y:auto;';
+            document.body.appendChild(debugPanel);
+        }
+        debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
+    }
+});
+// 给 info 函数加一个可选持续时间参数
+const _origInfo = info;
+info = function(msg, duration){
+    _origInfo(msg);
+    if(window._infoTimeout) clearTimeout(window._infoTimeout);
+    if(duration){
+        window._infoTimeout = setTimeout(() => {
+            const el = document.querySelector('.toast');
+            if(el) el.remove();
+        }, duration);
+    }
+};
+
 // ═══ REVEAL UI ═══
 setTimeout(()=>{
     statusEl.classList.add('visible');
@@ -1129,6 +1296,18 @@ setTimeout(()=>{
 
 // ═══ START ═══
 connect();
+
+// 页面加载后自动开启唤醒模式 (点击页面任意位置激活)
+function tryStartWake(){
+    if(wakeWordMode) return;
+    wakeWordMode = true;
+    document.getElementById('wake-toggle').classList.add('active');
+    ws.send(JSON.stringify({type: 'wake', enable: true}));
+    info('🔊 说 "Aria" 唤醒 (服务器监听)');
+}
+document.addEventListener('click', tryStartWake, {once: true});
+document.addEventListener('touchstart', tryStartWake, {once: true});
+document.addEventListener('keydown', tryStartWake, {once: true});
 </script>
 </body>
 </html>
