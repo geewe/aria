@@ -83,7 +83,7 @@ Aria 家庭助手 是一个接入 AI 大模型、面向全屋智能家居的语�
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/你的用户名/aria.git
+git clone https://github.com/geewe/aria.git
 cd aria
 
 # 2. 创建虚拟环境
