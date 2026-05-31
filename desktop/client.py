@@ -50,8 +50,7 @@ class AriaDesktopApp(rumps.App):
         self._capture_running = False        # 音频采集线程是否运行
         self._mode_wake = False              # 唤醒模式开关 (菜单栏)
         self._mode_conversation = False      # 对话模式中 (VAD触发后)
-        self._last_server_msg_time = 0       # 上次收到服务器消息时间
-
+        
         # 菜单
         self._status_item = rumps.MenuItem("● 启动中...", callback=None)
         self.menu = [
@@ -111,8 +110,7 @@ class AriaDesktopApp(rumps.App):
 
     async def _handle_message(self, data: dict):
         t = data.get("type", "")
-        self._last_server_msg_time = time.time()
-
+        
         if t == "wake":
             logger.info("🎤 Wake from server!")
             if self._mode_wake and not self._mode_conversation:
@@ -202,77 +200,60 @@ class AriaDesktopApp(rumps.App):
             self._update_status("🎤 唤醒中...")
 
     def _enable_wake(self):
-        """开启唤醒模式: 启动采集 + 发 wake_audio_start + 校准。"""
+        """开启唤醒: 启动音频采集, 直接发送到对话管线。"""
         if self._mode_wake:
             return
         self._mode_wake = True
         self._mode_conversation = False
-
-        # 启动音频采集
         self._start_capture()
-
-        # 通知服务器进入唤醒音频流模式
-        self._send({"type": "wake_audio_start"})
-        logger.info("Wake enabled: audio streaming to voice_trigger")
+        self._update_status("🎤 聆听中")
+        logger.info("Wake enabled: audio streaming to orchestrator")
 
     def _disable_wake(self):
-        """关闭唤醒模式。"""
+        """关闭唤醒。"""
         self._mode_wake = False
         self._mode_conversation = False
-        self._send({"type": "wake_audio_stop"})
         self._stop_capture()
+        self._update_status("🔊 唤醒关闭")
         logger.info("Wake disabled")
 
     # ── 对话模式 ──────────────────────────────────────────────
 
     def _enter_conversation(self):
-        """VAD触发: 切换到对话模式 (同一音频流, 切换发送目标)。"""
+        """VAD触发: 进入对话模式。"""
         if self._mode_conversation:
             return
         self._mode_conversation = True
         self._update_status("🎤 对话中")
-
-        # 退出唤醒音频流 → 后续帧走对话管线
-        self._send({"type": "wake_audio_stop"})
-        # 通知服务器开始对话
-        self._send({"type": "vad", "state": "speech_start"})
         self._show_overlay("listening")
 
-        # 15秒超时: 如果服务器没响应, 自动退出对话模式
+        # 15秒超时
         def timeout_check():
             started = time.time()
             while self._mode_conversation and time.time() - started < 15:
                 time.sleep(0.5)
             if self._mode_conversation:
-                logger.info("对话超时, 回到唤醒模式")
+                logger.info("对话超时")
                 self._exit_conversation()
         threading.Thread(target=timeout_check, daemon=True).start()
 
     def _exit_conversation(self):
-        """退出对话模式, 回到唤醒模式。"""
+        """退出对话模式。"""
         if not self._mode_conversation:
             return
         self._mode_conversation = False
-        self._send({"type": "vad", "state": "speech_end"})
         self._show_overlay("hide")
-        self._update_status("🎤 唤醒中...")
-
-        # 重新进入唤醒音频流
-        if self._mode_wake:
-            time.sleep(0.5)
-            self._send({"type": "wake_audio_start"})
+        self._update_status("🎤 聆听中")
 
     def _show_response(self, text: str):
-        """显示回复, 然后回到唤醒模式。"""
+        """显示回复, 然后回到聆听状态。"""
         self._mode_conversation = False
         self._show_overlay("response", text)
         self._update_status("🔊 Aria")
-
         def rearm():
             time.sleep(1.5)
             if self._mode_wake:
-                self._send({"type": "wake_audio_start"})
-                self._update_status("🎤 唤醒中...")
+                self._update_status("🎤 聆听中")
         threading.Thread(target=rearm, daemon=True).start()
 
     # ── 覆盖层 ────────────────────────────────────────────────

@@ -163,7 +163,8 @@ class ConversationOrchestrator:
         asyncio.create_task(
             self.session.set_state(DeviceState.LISTENING)
         )
-        self.vad.reset()
+        # 重置静音计数 (给用户更多时间停顿)
+        self.vad.silence_frames = 0
 
     async def _handle_speech_end(self):
         """语音结束 — 开始处理。"""
