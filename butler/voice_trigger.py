@@ -142,14 +142,14 @@ class VADTrigger:
     def __init__(
         self,
         energy_threshold: Optional[float] = None,  # None = 自动校准
-        speech_band_ratio: float = 0.50,  # 人声频段能量占比阈值 (0.5 = 50%)
-        min_speech_frames: int = 6,       # ~180ms @ 30ms
+        speech_band_ratio: float = 0.40,  # 人声频段能量占比阈值 (0.4 = 40%)
+        min_speech_frames: int = 4,       # ~120ms @ 30ms (更灵敏)
         cooldown_sec: float = 3.0,
         sample_rate: int = 16000,
         frame_ms: int = 30,
         auto_calibrate: bool = True,
     ):
-        self.energy_threshold = energy_threshold or 0.04
+        self.energy_threshold = energy_threshold or 0.015
         self.speech_band_ratio = speech_band_ratio
         self.min_speech_frames = min_speech_frames
         self.cooldown_sec = cooldown_sec
@@ -206,7 +206,7 @@ class VADTrigger:
         is_speech = (
             rms > self.energy_threshold
             and speech_ratio > self.speech_band_ratio
-            and spectral_crest > 2.0  # 噪声的 crest 通常 < 2.0
+            and spectral_crest > 1.6  # 噪声的 crest 通常 < 1.5
         )
 
         return is_speech, speech_ratio
@@ -234,9 +234,9 @@ class VADTrigger:
 
         noise_floor = np.median(rms_values)
         # 阈值 = 环境噪音 × 3 (至少 0.02)
-        calibrated = max(noise_floor * 3.5, 0.02)
+        calibrated = max(noise_floor * 2.5, 0.01)
         # 但不超过 0.15 (避免在安静环境下阈值过高)
-        calibrated = min(calibrated, 0.15)
+        calibrated = min(calibrated, 0.08)
 
         self.energy_threshold = calibrated
         self._noise_floor = noise_floor
@@ -253,13 +253,12 @@ class VADTrigger:
         if len(pcm_bytes) < 2:
             return False
 
-        # 自动校准 (首次检测到有声音时)
+        # 校准检查 (标量, 不阻塞, 不会在回调中触发新的录音)
+        # 实际校准在 start_server_mic() 之前完成
+        # 如果 _calibrated 为 False, 使用默认阈值
         if self.auto_calibrate and not self._calibrated:
-            try:
-                self.calibrate()
-            except Exception as e:
-                logger.warning(f"VAD 校准失败: {e}")
-                self._calibrated = True  # 只试一次
+            self._calibrated = True  # 标记校准跳过, 使用默认阈值
+            logger.info("VAD: 使用默认阈值 (自动校准请在启动前手动调用 calibrate())")
 
         now = time.time()
 
@@ -347,7 +346,7 @@ class VoiceTrigger:
         mode: str = "auto",
         keyword: str = "computer",
         access_key: str = "",
-        energy_threshold: float = 0.06,
+        energy_threshold: Optional[float] = None,
     ) -> str:
         """设置检测模式。返回实际启用的模式。"""
         self._mode = mode
@@ -375,10 +374,23 @@ class VoiceTrigger:
     # ── 服务器端麦克风 ──────────────────────────────────────────
 
     async def start_server_mic(self, device_index: int = -1):
-        """启动服务器端麦克风监听 (使用 sounddevice)。"""
+        """启动服务器端麦克风监听 (使用 sounddevice)。
+
+        启动前自动校准 VAD 阈值 (如果未校准且处于 VAD 模式)。
+        """
         if self._running:
             return
         self._running = True
+
+        # VAD 模式: 启动前自动校准环境噪音
+        if self._mode == self.MODE_VAD and self._vad and self._vad.auto_calibrate and not self._vad.is_calibrated:
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._vad.calibrate)
+                logger.info(f"VAD 自动校准完成: 阈值={self._vad.energy_threshold:.4f}")
+            except Exception as e:
+                logger.warning(f"VAD 自动校准失败: {e}")
+
         self._server_mic_task = asyncio.create_task(
             self._run_server_mic(device_index)
         )
