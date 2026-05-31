@@ -413,6 +413,19 @@ html,body{height:100%;overflow:hidden;background:var(--bg-deep);color:var(--text
     background:rgba(126,212,204,0.18);
 }
 
+/* ═══ WAKE TOGGLE ═══ */
+#wake-toggle{
+    position:fixed;z-index:10;
+    bottom:env(safe-area-inset-bottom,80px);right:20px;
+    width:36px;height:36px;border-radius:50%;
+    background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);
+    color:var(--text-dim);font-size:16px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    transition:all 0.3s;opacity:0.3;
+}
+#wake-toggle:hover{opacity:0.8;background:rgba(126,212,204,0.1);border-color:rgba(126,212,204,0.2)}
+#wake-toggle.active{opacity:0.8;color:var(--accent);border-color:rgba(126,212,204,0.3);box-shadow:0 0 10px rgba(126,212,204,0.1)}
+
 /* ═══ INPUT — 文字输入 (辅助) ═══ */
 #input-area{
     position:fixed;z-index:5;
@@ -567,6 +580,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg-deep);color:var(--text
     </div>
     <button id="send-btn">发送</button>
 </div>
+<div id="wake-toggle" title="唤醒词开关">🎤</div>
 
 <script>
 // ═══ CONFIG ═══
@@ -1094,6 +1108,7 @@ function handleKey(e){
 textInput.addEventListener('input',handleKey);
 textInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendText()}});
 sendBtn.addEventListener('click',sendText);
+document.getElementById('wake-toggle').addEventListener('click',toggleWakeMode);
 
 // ═══ MIC ═══
 micBtn.addEventListener('click',toggleMic);
