@@ -1,0 +1,23 @@
+# Hermes Butler Core — Dependencies
+# Core
+fastapi>=0.110.0
+uvicorn>=0.29.0
+websockets>=12.0
+httpx>=0.27.0
+pydantic>=2.0.0
+python-multipart>=0.0.9
+
+# Audio / ML
+torch>=2.0.0
+numpy>=1.24.0
+
+# STT (choose one)
+# faster-whisper>=1.0.0   # For faster-whisper
+# funasr>=1.0.0           # For SenseVoice
+
+# VAD
+# silero-vad>=5.0         # For Silero VAD (installed via torch.hub)
+
+# TTS
+# melo>=0.1.0             # For MeloTTS
+# edge-tts>=6.0.0         # For Edge TTS (fallback, needs internet)
