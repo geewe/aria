@@ -1,6 +1,6 @@
-# 🏠 Hermes Butler — 全屋智能语音管家
+# 🏠 Aria 家庭助手 — 全屋智能语音管家
 
-Hermes Butler 是一个接入 AI 大模型、面向全屋智能家居的语音助手系统。它能像豆包或小智 AI 一样流畅地自然语言交流，同时还能控制 HomeAssistant 中的智能设备、执行系统巡检任务、作为 Agent 调度中心。旨在成为家庭中**所有设备都可以交给它管**的超级大管家。
+Aria 家庭助手 是一个接入 AI 大模型、面向全屋智能家居的语音助手系统。它能像豆包或小智 AI 一样流畅地自然语言交流，同时还能控制 HomeAssistant 中的智能设备、执行系统巡检任务、作为 Agent 调度中心。旨在成为家庭中**所有设备都可以交给它管**的超级大管家。
 
 ## ✨ 功能特性
 
@@ -83,8 +83,8 @@ Hermes Butler 是一个接入 AI 大模型、面向全屋智能家居的语音�
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/your-username/hermes-butler.git
-cd hermes-butler
+git clone https://github.com/你的用户名/aria.git
+cd aria
 
 # 2. 创建虚拟环境
 python3 -m venv venv
@@ -168,7 +168,7 @@ HASS_TOKEN="your_token" HASS_URL="http://your-ha:8123" \
 ## 📁 项目结构
 
 ```
-hermes-butler/
+aria/
 ├── butler/                  # 核心后端
 │   ├── server.py            # FastAPI WebSocket 服务器
 │   ├── orchestrator.py      # 对话编排器（VAD→STT→LLM→TTS）
@@ -230,7 +230,7 @@ hermes-butler/
 
 - [ ] 本地 TTS 引擎（Piper TTS / CosyVoice 2）— 零延迟首音
 - [ ] ESP32 硬件客户端
-- [ ] 唤醒词（Hey Hermes）
+- [ ] 唤醒词（Hey Aria）
 - [ ] 多设备协同（跨房间对话迁移）
 - [ ] 声纹识别（区分家庭成员）
 - [ ] Tailscale 远程访问
