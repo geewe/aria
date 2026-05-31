@@ -63,7 +63,7 @@ class EdgeTTS:
         """合成文本为完整 MP3 音频。"""
         try:
             import edge_tts
-            communicate = edge_tts.Communicate(text, self.voice, rate=self.rate, volume=self.volume)
+            communicate = edge_tts.Communicate(text, self.voice, rate=self.rate, volume=self.volume, connect_timeout=3)
             audio = bytearray()
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
@@ -83,7 +83,11 @@ class EdgeTTS:
             return
         try:
             import edge_tts
-            communicate = edge_tts.Communicate(text, self.voice, rate=self.rate, volume=self.volume)
+            communicate = edge_tts.Communicate(
+                text, self.voice,
+                rate=self.rate, volume=self.volume,
+                connect_timeout=3, receive_timeout=15
+            )
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     yield chunk["data"]

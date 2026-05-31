@@ -61,7 +61,7 @@ class Config:
         self._llm_api_key = os.environ.get("LLM_API_KEY") or self._get("llm", "api_key", default="hermes-lan-key")
         self._llm_model = os.environ.get("LLM_MODEL") or self._get("llm", "model", default="deepseek-v4-flash")
         self._llm_max_tokens = int(os.environ.get("LLM_MAX_TOKENS") or self._get("llm", "max_tokens", default=200))
-        self._llm_timeout = int(os.environ.get("LLM_TIMEOUT") or self._get("llm", "timeout", default=15))
+        self._llm_timeout = int(os.environ.get("LLM_TIMEOUT") or self._get("llm", "timeout", default=5))
         self._llm_temperature = float(os.environ.get("LLM_TEMPERATURE") or self._get("llm", "temperature", default=0.7))
 
         # HomeAssistant
