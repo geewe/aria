@@ -1,6 +1,6 @@
 # 🏠 Aria 家庭助手 — 全屋智能语音管家
 
-> 版本 4.2.0 · 全双工语音管线 · AI 大模型驱动 · HomeAssistant 深度集成
+> 版本 4.2.0 · macOS 桌面客户端 · 类 Siri 唤醒体验 · 全双工语音管线 · AI 大模型驱动 · HomeAssistant 深度集成
 
 Aria 是一个接入 AI 大模型、面向全屋智能家居的语音助手系统。它能像豆包或小智 AI 一样流畅地进行自然语言交流，同时控制 HomeAssistant 中的智能设备、查询信息、执行系统任务。旨在成为家庭中**所有设备都可以交给它管**的超级大管家。
 
@@ -42,6 +42,15 @@ Aria 是一个接入 AI 大模型、面向全屋智能家居的语音助手系�
 - **macOS say 离线兜底**：在线 TTS 不可用时自动切到本地语音
 - **打断机制**：说话时自动停止当前 TTS
 
+### 🖥️ macOS 桌面客户端 (类 Siri)
+- **菜单栏常驻图标**：点击切换唤醒/手动对话
+- **浮动覆盖窗口**：右上角弹出，类似 Siri 界面
+- **波形动画**：聆听时实时音频可视化
+- **Porcupine 唤醒词**（需 Access Key）：说 "Computer"（或自定义词）唤醒
+- **VAD 语音触发**（零配置）：检测到语音自动进入聆听
+- **桌面通知**：唤醒/回复推送系统通知
+- **全局快捷键**：支持键盘触发对话（开发中）
+
 ### 🩺 系统自检诊断
 - **全量 15 项诊断**：Python 版本 / 系统资源 / 音频设备 / SSL 证书 / 配置文件 / 环境变量 / 端口状态 / 网络连通性 / DNS 解析 / LLM API / HomeAssistant / Edge TTS / macOS TTS / WebSocket / 对话记录
 - **快速诊断**：跳过耗时项，500ms 内出结果
@@ -72,6 +81,16 @@ Aria 是一个接入 AI 大模型、面向全屋智能家居的语音助手系�
 ## 🏗️ 系统架构
 
 ```
+┌──────────────────────────────────────┐
+│    macOS 桌面客户端 (菜单栏常驻)        │
+│  ┌─────────────────────────────────┐  │
+│  │ 唤醒词检测引擎 (Porcupine/VAD)  │  │
+│  │ 浮动覆盖层 (类 Siri 弹窗)       │  │
+│  │ WebSocket ↔ Aria 服务器         │  │
+│  └─────────────┬───────────────────┘  │
+└────────────────┼──────────────────────┘
+                 │
+                 ↓
 ┌─────────────────────────────────────┐
 │         唤醒词检测引擎               │
 │  Porcupine / VAD / 浏览器音频流     │
@@ -119,6 +138,7 @@ Aria 是一个接入 AI 大模型、面向全屋智能家居的语音助手系�
 | 音频播放 | MediaSource + 队列化缓冲播放 |
 | 语音输入 | Web Speech Recognition API |
 | 唤醒词 | Porcupine / VAD 能量检测 / 浏览器音频流式唤醒 |
+| 桌面客户端 | Python + rumps + pyobjc (macOS 菜单栏应用) |
 | 流式字幕 | WebSocket 逐 token 推送 |
 | 网络检测 | TCP 探测 + DNS 解析 + HTTP HEAD |
 
@@ -173,7 +193,25 @@ export LLM_API_KEY="your-api-key"
 openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 3650 -nodes -subj "/CN=localhost"
 ```
 
-### 5. 启动
+### 5. 启动桌面客户端 (类 Siri 体验)
+
+```bash
+# 菜单栏常驻助手 (需要先启动服务器)
+bash aria-desktop.sh
+
+# 或指定参数
+ARIA_SERVER="wss://127.0.0.1:8653" ARIA_WAKE_KEYWORD="computer" bash aria-desktop.sh
+
+# 设置 Porcupine Access Key 以获得唤醒词支持
+export PORCUPINE_ACCESS_KEY="你的密钥"
+bash aria-desktop.sh
+```
+
+桌面客户端会出现在 macOS 菜单栏，常驻后台监听唤醒词。
+
+### 6. 浏览器访问
+
+如果不想使用桌面客户端，直接打开浏览器:
 
 ```bash
 # 开发模式
@@ -215,6 +253,11 @@ aria/
 │   └── index.html              # Web 科幻风格界面
 ├── run.py                      # 开发启动入口
 ├── start.sh                    # 生产启动脚本
+├── aria-desktop.sh             # 桌面客户端启动脚本
+├── desktop/                    # 桌面客户端 (macOS 菜单栏应用)
+│   ├── __init__.py
+│   ├── client.py               # 主应用 (rumps 菜单栏)
+│   └── overlay.py              # 浮动覆盖窗口 (AppKit)
 ├── config.yaml.example         # 配置模板
 ├── requirements.txt            # Python 依赖
 └── README.md                   # 项目文档
