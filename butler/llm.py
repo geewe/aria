@@ -37,7 +37,7 @@ FALLBACK_RESPONSES = {
 TEMPLATE_RESPONSES = {
     "time": lambda: f"现在{datetime.now().hour}点{datetime.now().minute}分",
     "weather": lambda: "今天晴转多云，23到30度",
-    "who_are_you": lambda: "我是 Hermes 管家，你的家庭智能语音助手",
+    "who_are_you": lambda: "我是 Aria，你的家庭智能语音助手",
     "light_on": lambda: "好的",
     "light_off": lambda: "已关闭",
     "scene_leave": lambda: "离家模式已开启，灯已关闭，安防已启动",

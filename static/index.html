@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14161c">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Hermes</title>
+<title>Aria 家庭助手</title>
 <style>
 /* ═══ RESET ═══ */
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
@@ -552,7 +552,7 @@ function scheduleReconnect(){
 function handleMsg(msg){
     switch(msg.type){
         case 'connected':
-            info('Hermes · v'+msg.version);
+            info('Aria · v'+msg.version);
             break;
 
         case 'llm_start':

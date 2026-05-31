@@ -48,7 +48,7 @@ async def test():
     # Test TTS directly
     print("\nTesting TTS synthesis...")
     try:
-        audio = await tts.synthesize("你好,我是Hermes管家")
+        audio = await tts.synthesize("你好,我是Aria")
         if audio:
             print(f"  TTS: {len(audio)} bytes of PCM audio")
         else:

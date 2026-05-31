@@ -1,4 +1,4 @@
-"""Hermes Butler Core v4 — 主 WebSocket 服务器.
+"""Aria 家庭助手 v4 — 主 WebSocket 服务器.
 
 全双工语音管线:
   设备 → WebSocket → VAD → AEC → STT → LLM → TTS → 设备
@@ -59,7 +59,7 @@ class ButlerServer:
         self.orchestrators: dict[str, ConversationOrchestrator] = {}
         
         logger.info("=" * 50)
-        logger.info("Hermes Butler Core v4 initialized")
+        logger.info("Aria 家庭助手 v4 initialized")
         logger.info(f"  VAD:  MultiLevel (energy + spectral)")
         logger.info(f"  AEC:  NLMS ({self.aec.filter_length}taps)")
         logger.info(f"  STT:  {self._fmt_stt()}")
@@ -107,8 +107,8 @@ class ButlerServer:
             await session.send_json({
                 "type": "connected",
                 "device_id": device_id,
-                "version": "4.0.0",
-                "server": "Hermes Butler Core v4",
+                "version": "4.1.0",
+                "server": "Aria 家庭助手 v4",
             })
 
             # 启动管线
@@ -218,7 +218,7 @@ class ButlerServer:
             ],
         }
         health["tts_stats"] = self.tts.get_stats()
-        health["version"] = "4.0.0"
+        health["version"] = "4.1.0"
         return health
 
     async def handle_metrics(self) -> dict:
@@ -260,14 +260,14 @@ butler = ButlerServer()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Hermes Butler v4 starting...")
+    logger.info("Aria 家庭助手 v4 starting...")
     yield
-    logger.info("Hermes Butler v4 shutting down...")
+    logger.info("Aria 家庭助手 v4 shutting down...")
 
 
 app = FastAPI(
-    title="Hermes Butler Core v4",
-    version="4.0.0",
+    title="Aria 家庭助手 v4",
+    version="4.1.0",
     lifespan=lifespan,
 )
 
@@ -323,6 +323,22 @@ async def hass_status():
         }
     except Exception as e:
         return {"connected": False, "reason": str(e)}
+
+@app.get("/api/config")
+async def get_config():
+    """获取当前配置（API密钥等敏感信息已过滤）。"""
+    from .config import config
+    return config.to_dict()
+
+
+@app.post("/api/config/reload")
+async def reload_config():
+    """热重载配置文件。"""
+    from .config import config
+    config._load_yaml()
+    config._apply_env_overrides()
+    return {"status": "ok", "message": "配置已重新加载"}
+
 
 @app.get("/", include_in_schema=False)
 async def root_redirect():

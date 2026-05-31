@@ -1,4 +1,4 @@
-# Hermes Butler Core — Dependencies
+# Aria 家庭助手 — Dependencies
 # Core
 fastapi>=0.110.0
 uvicorn>=0.29.0
@@ -21,3 +21,4 @@ numpy>=1.24.0
 # TTS
 # melo>=0.1.0             # For MeloTTS
 # edge-tts>=6.0.0         # For Edge TTS (fallback, needs internet)
+pyyaml>=6.0

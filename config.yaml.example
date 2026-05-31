@@ -1,0 +1,57 @@
+# Aria 家庭助手 v4 — 配置文件
+# 此文件会被 .gitignore 排除，不会提交到版本库
+
+server:
+  host: "0.0.0.0"
+  port: 8653
+  ssl:
+    cert_file: "cert.pem"
+    key_file: "key.pem"
+
+llm:
+  provider: "hermes"            # hermes | openai | custom
+  api_url: "http://localhost:8642/v1/chat/completions"
+  api_key: "hermes-lan-key"
+  model: "deepseek-v4-flash"
+  max_tokens: 200
+  timeout: 15
+  temperature: 0.7
+
+homeassistant:
+  url: "http://192.168.2.45:8123"
+  token: ""                     # 在 .env 或环境变量中设置
+
+tts:
+  primary: "edge"               # edge | macos | piper
+  voice: "zh-CN-XiaoxiaoNeural"
+  rate: "+0%"
+  volume: "+0%"
+
+audio:
+  sample_rate: 16000
+  frame_ms: 30
+
+vad:
+  threshold: 0.5
+  min_speech_ms: 150
+  min_silence_ms: 800
+
+conversation:
+  timeout: 8.0                  # 免唤醒对话超时（秒）
+  max_context_turns: 5
+
+# 监控与日志
+monitoring:
+  enabled: true
+  metrics_retention_days: 7
+
+# 远程访问
+remote_access:
+  enabled: false
+  provider: "tailscale"         # tailscale | frp | cloudflare
+
+# 多用户
+users:
+  default:
+    name: "主人"
+    wake_word_enabled: true

@@ -1,4 +1,4 @@
-"""Start Hermes Butler server"""
+"""Start Aria 家庭助手 server"""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

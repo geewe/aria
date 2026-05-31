@@ -17,3 +17,4 @@ key.pem
 *.wav
 *.mp3
 __pycache__
+config.yaml

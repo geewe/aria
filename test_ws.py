@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick WebSocket test for Hermes Butler."""
+"""Quick WebSocket test for Aria 家庭助手."""
 import asyncio
 import json
 import sys

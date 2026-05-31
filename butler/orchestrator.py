@@ -467,7 +467,7 @@ class ConversationOrchestrator:
             await self.session.set_state(DeviceState.IDLE)
             return "已恢复普通模式"
         elif "你是谁" in text:
-            return "我是Hermes管家, 你的家庭智能语音助手"
+            return "我是Aria, 你的家庭智能语音助手"
         return "好的"
 
     async def _handle_agent(self, text: str, route: RouteResult):

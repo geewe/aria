@@ -1,4 +1,4 @@
-"""Hermes Butler Core v4 — 启动入口。
+"""Aria 家庭助手 v4 — 启动入口。
 
 Usage:
   python run.py                    # 默认启动
@@ -50,7 +50,7 @@ def setup_logging():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hermes Butler Core v4")
+    parser = argparse.ArgumentParser(description="Aria 家庭助手 v4")
     parser.add_argument("--host", default=config.HOST, help="监听地址")
     parser.add_argument("--port", type=int, default=config.PORT, help="监听端口")
     parser.add_argument("--reload", action="store_true", help="热重载")
@@ -65,7 +65,7 @@ def main():
         logging.getLogger("butler").setLevel(args.log_level.upper())
 
     print()
-    print("🏠 Hermes Butler Core v4")
+    print("🏠 Aria 家庭助手 v4")
     print("=" * 50)
     print(f"  WebSocket:  ws://{args.host}:{args.port}/ws")
     print(f"  Health:     http://{args.host}:{args.port}/health")
