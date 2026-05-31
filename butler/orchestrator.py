@@ -181,7 +181,9 @@ class ConversationOrchestrator:
         loop = asyncio.get_event_loop()
 
         def _stt():
-            return self.stt.transcribe(bytes(self.speech_audio_buffer))
+            return asyncio.run(
+                self.stt.transcribe(bytes(self.speech_audio_buffer))
+            )
 
         text = await loop.run_in_executor(None, _stt)
         stage.stt_end = time.time()

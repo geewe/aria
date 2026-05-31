@@ -123,34 +123,56 @@ class EdgeSTT:
         return True  # HTTP API, always available if network is up
     
     async def transcribe(self, audio_bytes: bytes, language: str = "zh-CN") -> str:
-        """通过 Azure Speech API 转写 (edge-tts 的 STT 能力)。"""
-        # 这里我们使用 OpenAI Whisper API 兼容接口
-        import httpx
-        
+        """转写音频 — 优先 OpenAI Whisper API, 回退到 Google Free STT。"""
+        # 尝试 OpenAI Whisper API (需要 OPENAI_API_KEY)
         api_key = os.environ.get("OPENAI_API_KEY", "")
-        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        
-        if not api_key:
-            return ""
-        
+        if api_key:
+            import httpx
+            base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    files = {"file": ("audio.wav", audio_bytes, "audio/wav")}
+                    data = {"model": "whisper-1", "language": language}
+                    resp = await client.post(
+                        f"{base_url}/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        files=files, data=data,
+                    )
+                    if resp.status_code == 200:
+                        text = resp.json().get("text", "").strip()
+                        if text:
+                            return text
+            except Exception as e:
+                logger.warning(f"Whisper API error: {e}")
+
+        # 回退: Google Free STT (SpeechRecognition)
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                files = {"file": ("audio.wav", audio_bytes, "audio/wav")}
-                data = {"model": "whisper-1", "language": language}
-                
-                resp = await client.post(
-                    f"{base_url}/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    files=files,
-                    data=data,
-                )
-                if resp.status_code == 200:
-                    return resp.json().get("text", "").strip()
-                else:
-                    logger.warning(f"STT API error: {resp.status_code}")
-                    return ""
+            loop = asyncio.get_event_loop()
+            text = await loop.run_in_executor(None, self._google_stt, audio_bytes, language)
+            if text:
+                return text
         except Exception as e:
-            logger.error(f"EdgeSTT error: {e}")
+            logger.warning(f"Google STT fallback error: {e}")
+
+        return ""
+
+    def _google_stt(self, audio_bytes: bytes, language: str = "zh-CN") -> str:
+        """同步 Google STT (在 executor 中运行)。"""
+        import numpy as np
+        import speech_recognition as sr
+
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        pcm = (audio_np * 32767).astype(np.int16).tobytes()
+        audio_data = sr.AudioData(pcm, 16000, 2)
+
+        recognizer = sr.Recognizer()
+        try:
+            text = recognizer.recognize_google(audio_data, language=language)
+            return text.strip()
+        except sr.UnknownValueError:
+            return ""
+        except Exception as e:
+            logger.warning(f"GoogleSTT error: {e}")
             return ""
 
 
@@ -179,6 +201,84 @@ class FasterWhisperSTT:
             return self.model is not None
         except Exception:
             return False
+
+
+class GoogleSTT:
+    """SpeechRecognition Google STT — 免费, 无需 API Key。
+
+    使用 Google Web Speech API 进行语音识别。
+    需要网络连接, 在中国大陆可能被屏蔽。
+
+    回退方案: 当此 STT 不可用或超时时, 返回空字符串。
+    """
+
+    def __init__(self):
+        self._recognizer = None
+
+    def _get(self):
+        if self._recognizer is None:
+            import speech_recognition as sr
+            self._recognizer = sr.Recognizer()
+        return self._recognizer
+
+    def transcribe_sync(self, audio_np, language="zh-CN") -> str:
+        """同步转写: 输入 numpy float32 数组, 输出文本。"""
+        import numpy as np
+        r = self._get()
+
+        # Convert float32 [-1, 1] to int16 PCM
+        pcm = (audio_np * 32767).astype(np.int16).tobytes()
+        audio_data = __import__("speech_recognition", fromlist=["AudioData"]).AudioData(
+            pcm, 16000, 2
+        )
+
+        try:
+            text = r.recognize_google(audio_data, language=language)
+            return text.strip()
+        except __import__("speech_recognition").UnknownValueError:
+            return ""
+        except Exception as e:
+            logger.warning(f"GoogleSTT error: {e}")
+            return ""
+
+    def is_available(self) -> bool:
+        try:
+            import speech_recognition
+            return True
+        except ImportError:
+            return False
+
+
+class FallbackSTT:
+    """多层回退 STT — 尝试多个引擎直到成功。
+
+    Engine 0: GoogleSTT (免费在线)
+    Engine 1: 空 (返回空字符串, 触发 "请再说一遍")
+    """
+
+    def __init__(self):
+        self._engines = []
+        g = GoogleSTT()
+        if g.is_available():
+            self._engines.append(("google", g))
+        logger.info(f"FallbackSTT: {len(self._engines)} engine(s) loaded")
+
+    def transcribe(self, audio_bytes: bytes, language: str = "zh-CN") -> str:
+        """转写音频字节。"""
+        import numpy as np
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+        for name, engine in self._engines:
+            try:
+                text = engine.transcribe_sync(audio_np, language)
+                if text:
+                    logger.info(f"STT [{name}]: {text[:200]}")
+                    return text
+            except Exception as e:
+                logger.warning(f"STT [{name}] failed: {e}")
+                continue
+
+        return ""
     
     def transcribe_sync(self, audio_np: np.ndarray, language: str = "zh") -> str:
         self._load()

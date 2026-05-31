@@ -139,6 +139,7 @@ class AriaDesktopApp(rumps.App):
 
     def _send_audio(self, frame: bytes):
         if not self._ws or not self._ws_connected:
+            logger.debug(f'Audio dropped: ws={self._ws is not None}, connected={self._ws_connected}')
             return
         self._call_async(self._ws.send(frame))
 
@@ -173,8 +174,11 @@ class AriaDesktopApp(rumps.App):
             if status:
                 logger.debug(f"Audio status: {status}")
 
+            rms = float(np.sqrt(np.mean(indata[:, 0] ** 2)))
             pcm = (indata[:, 0] * 32767).astype(np.int16).tobytes()
             self._send_audio(pcm)
+            if rms > 0.005:
+                logger.debug(f'Audio frame: rms={rms:.4f}, len={len(pcm)}')
 
         try:
             with sd.InputStream(
