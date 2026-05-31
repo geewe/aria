@@ -87,6 +87,14 @@ class RuleRouter:
             (re.compile(r"(我要)?(看电影|看片|影院|投影)"),
              IntentType.SMART_HOME, "scene_movie"),
             
+            # === 加密货币 ===
+            (re.compile(r"(比特币|以太坊|狗狗币|莱特币|币安币|狗狗|以太|大饼|二饼|瑞波|波卡|索拉纳).*(价格|行情|多少|报价)"),
+             IntentType.QUERY, "crypto_price"),
+            (re.compile(r"(价格|行情).*(比特币|以太坊|狗狗币|莱特币|币安币|狗狗|以太|大饼|二饼)"),
+             IntentType.QUERY, "crypto_price"),
+            (re.compile(r"^(币价|虚拟币|加密货币|数字货币)"),
+             IntentType.QUERY, "crypto_price"),
+            
             # === 查询 ===
             (re.compile(r"(今天|明天|后天)\s*(天气|温度|下雨|下雪|刮风|晴|阴)"),
              IntentType.QUERY, "weather"),

@@ -244,8 +244,12 @@ class TTSEngine:
     def is_available(self) -> bool:
         return True
 
-    async def synthesize(self, text: str) -> tuple[Optional[bytes], str]:
+    async def synthesize(self, text: str, offline: bool = False) -> tuple[Optional[bytes], str]:
         """合成文本为完整音频。
+
+        Args:
+            text: 要合成的文本
+            offline: 是否离线模式 (True 时跳过 EdgeTTS)
 
         Returns:
             (audio_bytes, format) — format: "mp3" or "aiff"
@@ -261,16 +265,17 @@ class TTSEngine:
                 self._layer_hits["cache"] += 1
                 return audio, "mp3"
 
-        # Layer 1: Edge TTS
-        try:
-            audio = await self.edge.synthesize(text)
-            if audio:
-                self._layer_hits["edge"] += 1
-                return audio, "mp3"
-        except Exception:
-            pass
+        # Layer 1: Edge TTS (仅在线模式)
+        if not offline:
+            try:
+                audio = await self.edge.synthesize(text)
+                if audio:
+                    self._layer_hits["edge"] += 1
+                    return audio, "mp3"
+            except Exception:
+                pass
 
-        # Layer 2: macOS say
+        # Layer 2: macOS say (离线可用)
         audio = await self.macos.synthesize(text)
         if audio:
             self._layer_hits["macos"] += 1
@@ -278,8 +283,12 @@ class TTSEngine:
 
         return None, ""
 
-    async def synthesize_stream(self, text: str) -> AsyncGenerator[tuple[bytes, str], None]:
+    async def synthesize_stream(self, text: str, offline: bool = False) -> AsyncGenerator[tuple[bytes, str], None]:
         """流式合成文本为音频块。
+
+        Args:
+            text: 要合成的文本
+            offline: 是否离线模式 (True 时跳过 EdgeTTS)
 
         Yields:
             (audio_chunk, format) — 片段+格式标识
@@ -296,20 +305,21 @@ class TTSEngine:
                 yield audio, "mp3"
                 return
 
-        # Layer 1: Edge TTS 流式
-        try:
-            first = True
-            async for chunk in self.edge.synthesize_stream(text):
-                if first:
-                    self._layer_hits["edge"] += 1
-                    first = False
-                yield chunk, "mp3"
-            if not first:
-                return
-        except Exception:
-            pass
+        # Layer 1: Edge TTS 流式 (仅在线模式)
+        if not offline:
+            try:
+                first = True
+                async for chunk in self.edge.synthesize_stream(text):
+                    if first:
+                        self._layer_hits["edge"] += 1
+                        first = False
+                    yield chunk, "mp3"
+                if not first:
+                    return
+            except Exception:
+                pass
 
-        # Layer 2: macOS say (完整合成后作为单块输出)
+        # Layer 2: macOS say (完整合成后作为单块输出, 离线可用)
         audio = await self.macos.synthesize(text)
         if audio:
             self._layer_hits["macos"] += 1

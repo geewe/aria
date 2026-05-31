@@ -28,6 +28,7 @@ from .interrupt import InterruptManager
 from .orchestrator import ConversationOrchestrator
 from .security import DeviceAuth, RateLimiter, AuditLogger, Permission
 from .monitor import MetricsCollector, AlertManager, TraceSpan, metrics
+from .diagnostics import Diagnostics
 
 logger = logging.getLogger("butler.server")
 
@@ -338,6 +339,49 @@ async def reload_config():
     config._load_yaml()
     config._apply_env_overrides()
     return {"status": "ok", "message": "配置已重新加载"}
+
+
+@app.get("/api/hass/test")
+async def test_hass_command(text: str = "打开台灯"):
+    """测试 HA 命令解析和执行。"""
+    result = {}
+    try:
+        entities = await butler.hass.refresh_entities()
+        result["entities_count"] = len(entities)
+        
+        cmd = butler.hass.matcher.parse_command(text, "")
+        result["parse_result"] = cmd
+        
+        if cmd.get("entities"):
+            reply = await butler.hass.execute_command(cmd)
+            result["execute_reply"] = reply
+            result["success"] = True
+        else:
+            result["success"] = False
+            result["reason"] = "No entities matched"
+    except Exception as e:
+        result["success"] = False
+        result["error"] = str(e)
+        import traceback
+        result["traceback"] = traceback.format_exc()
+    
+    return result
+
+
+@app.get("/api/diagnostics")
+async def full_diagnostics():
+    """全量系统自检。"""
+    from .diagnostics import Diagnostics
+    diag = Diagnostics(butler)
+    return await diag.run_all()
+
+
+@app.get("/api/diagnostics/quick")
+async def quick_diagnostics_endpoint():
+    """快速系统自检 (跳过耗时检查项)。"""
+    from .diagnostics import Diagnostics
+    diag = Diagnostics(butler)
+    return await diag.run_quick()
 
 
 @app.get("/", include_in_schema=False)

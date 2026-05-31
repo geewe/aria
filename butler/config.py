@@ -60,8 +60,8 @@ class Config:
         self._llm_api_url = os.environ.get("LLM_API_URL") or self._get("llm", "api_url", default="http://localhost:8642/v1/chat/completions")
         self._llm_api_key = os.environ.get("LLM_API_KEY") or self._get("llm", "api_key", default="hermes-lan-key")
         self._llm_model = os.environ.get("LLM_MODEL") or self._get("llm", "model", default="deepseek-v4-flash")
-        self._llm_max_tokens = int(os.environ.get("LLM_MAX_TOKENS") or self._get("llm", "max_tokens", default=200))
-        self._llm_timeout = int(os.environ.get("LLM_TIMEOUT") or self._get("llm", "timeout", default=5))
+        self._llm_max_tokens = int(os.environ.get("LLM_MAX_TOKENS") or self._get("llm", "max_tokens", default=500))
+        self._llm_timeout = int(os.environ.get("LLM_TIMEOUT") or self._get("llm", "timeout", default=15))
         self._llm_temperature = float(os.environ.get("LLM_TEMPERATURE") or self._get("llm", "temperature", default=0.7))
 
         # HomeAssistant
@@ -170,6 +170,8 @@ class Config:
 - 多轮对话中记住上下文
 - 如果没听懂说"能再说一遍吗"
 - 用户问不会的东西诚实说"这个我还不清楚"
+- 涉及实时数据(股价/币价/新闻)要说明需要联网查询
+- 回复要简短,一句话能说清楚不要说两句
 - 当前时间: {time}
 - 当前用户: {user}"""
 

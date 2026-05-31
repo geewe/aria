@@ -204,7 +204,7 @@ class EntityAliasMatcher:
             }
         """
         text_lower = text.lower()
-        result = {"entities": [], "action": "", "params": {}, "room": current_room}
+        result = {"entities": [], "action": "", "params": {}, "room": current_room, "domain": ""}
         
         # 检测操作
         is_on = any(w in text_lower for w in ["打开", "开", "开启", "亮了"])
@@ -225,8 +225,22 @@ class EntityAliasMatcher:
         elif any(w in text_lower for w in ["电视", "投影"]):
             domain = "media_player"
         
-        # 匹配实体
+        # 匹配实体 (指定领域优先)
         entity = self.find_best_match(text, domain, current_room)
+        
+        # 不限领域搜索对比: 如果分数更高则采用 (解决"卫生间灯"→switch的场景)
+        entity_all = self.find_best_match(text, "", current_room)
+        if entity_all:
+            score_domain = self._last_score if hasattr(self, '_last_score') else 0
+            # 如果无领域限制的匹配分数明显更高, 或领域匹配没找到, 用无领域结果
+            if not entity or True:  # 总是比较分数
+                # 重新评分做比较
+                s1 = self._score_entity(entity, text, current_room) if entity else 0
+                s2 = self._score_entity(entity_all, text, current_room)
+                if s2 > s1 + 10:  # 无领域匹配高出10分以上才切换
+                    entity = entity_all
+                    domain = entity.domain if entity else domain
+        
         if entity:
             result["entities"] = [entity.entity_id]
             result["room"] = entity.area or current_room
@@ -238,6 +252,9 @@ class EntityAliasMatcher:
         elif is_temp and temp_match:
             result["action"] = "set_temperature"
             result["params"]["temperature"] = int(temp_match.group(1))
+        elif result["entities"]:
+            # 提到了设备但没有明确操作 → 默认为开
+            result["action"] = "turn_on"
         
         return result
     

@@ -19,6 +19,7 @@ from typing import AsyncGenerator, Optional
 import httpx
 
 from .config import config
+from .network import network_checker
 
 logger = logging.getLogger("butler.llm")
 
@@ -35,6 +36,14 @@ FALLBACK_RESPONSES = {
 
 # 简单的回复模板 (比纯兜底要好)
 TEMPLATE_RESPONSES = {
+    "greeting": lambda: "你好，我在呢",
+    "thanks": lambda: "不客气",
+    "goodbye": lambda: "再见",
+    "confirm_yes": lambda: "好的",
+    "confirm_no": lambda: "好的",
+    "mood": lambda: "我很好，谢谢",
+    "capabilities": lambda: "我可以帮你控制家里的智能设备、查询信息、陪你聊天",
+
     "time": lambda: f"现在{datetime.now().hour}点{datetime.now().minute}分",
     "weather": lambda: "今天晴转多云，23到30度",
     "who_are_you": lambda: "我是 Aria，你的家庭智能语音助手",
@@ -65,6 +74,10 @@ class LLMStreamer:
         )
         self._client: Optional[httpx.AsyncClient] = None
 
+    async def _check_network(self) -> bool:
+        """快速检查 API 服务器是否可达 (超时 1s, 带 30s 缓存)。"""
+        return await network_checker.check_api(self.api_url)
+
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
@@ -92,7 +105,18 @@ class LLMStreamer:
         Yields:
             单个 token 文本
         """
-        # 检查模板回复 (简单命令直接返回)
+        # 第一阶段: 快速检测网络连通性 (超时 1s)
+        network_ok = await self._check_network()
+
+        if not network_ok:
+            logger.info("LLM: Network unavailable, using template fallback")
+            response = self._get_fallback_response(text)
+            for char in response:
+                yield char
+                await asyncio.sleep(0.01)
+            return
+
+        # 第二阶段: 检查模板回复 (简单命令直接返回)
         template_response = self._check_template(text)
         if template_response:
             for char in template_response:
@@ -103,9 +127,14 @@ class LLMStreamer:
         # 尝试 API
         try:
             messages = self._build_messages(text, system_prompt, context)
+            timeout = config.LLM_TIMEOUT
             async for token in self._stream_api(messages):
                 yield token
             return
+        except asyncio.TimeoutError:
+            logger.warning(f"LLM API timeout ({config.LLM_TIMEOUT}s)")
+        except httpx.TimeoutException:
+            logger.warning(f"LLM API timeout ({config.LLM_TIMEOUT}s)")
         except Exception as e:
             logger.warning(f"LLM API failed, using fallback: {e}")
 
@@ -126,17 +155,36 @@ class LLMStreamer:
                 return response_fn()
             elif keyword == "who_are_you" and ("你是谁" in text or "你叫什么" in text):
                 return response_fn()
+            elif keyword == "greeting" and any(w in text for w in ["你好", "您好", "嗨", "hi", "hello"]):
+                return response_fn()
+            elif keyword == "thanks" and any(w in text for w in ["谢谢", "多谢", "感谢"]):
+                return response_fn()
+            elif keyword == "goodbye" and any(w in text for w in ["再见", "拜拜", "bye"]):
+                return response_fn()
+            elif keyword == "capabilities" and any(w in text for w in ["你会什么", "你能做什么", "功能"]):
+                return response_fn()
         
         return None
 
     def _get_fallback_response(self, text: str) -> str:
-        """获取兜底回复。"""
+        """获取兜底回复 — 根据输入内容智能选择。"""
+        text_lower = text.lower()
+        
+        # 实时数据类
+        if any(w in text_lower for w in ["价格", "股价", "币价", "汇率", "股票", "比特币", "基金"]):
+            return "我暂时不能查询实时数据，需要联网功能"
+        if any(w in text_lower for w in ["新闻", "天气", "天气预报", "今天天气"]):
+            return "今天晴，23到30度"
+        
+        # 计算类
+        if any(w in text_lower for w in ["等于", "计算", "多少"]):
+            return "这个问题我还在学习中"
+        
+        # 通用兜底
         responses = [
-            "好的，已收到",
-            "明白",
-            "好的",
-            "是的",
-            "我知道了",
+            "这个问题我还不太确定",
+            "我暂时无法回答这个问题",
+            "能换一个问题吗",
         ]
         return random.choice(responses)
 
@@ -189,30 +237,34 @@ class LLMStreamer:
             "temperature": config.LLM_TEMPERATURE,
         }
 
-        async with client.stream(
-            "POST", self.api_url, json=payload
-        ) as response:
-            if response.status_code != 200:
-                error_body = await response.aread()
-                logger.error(f"LLM API error {response.status_code}: {error_body}")
-                return
-
-            async for line in response.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-
-                data = line[6:]
-                if data == "[DONE]":
+        try:
+            async with client.stream(
+                "POST", self.api_url, json=payload
+            ) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    logger.error(f"LLM API error {response.status_code}: {error_body}")
                     return
 
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    token = delta.get("content", "")
-                    if token:
-                        yield token
-                except json.JSONDecodeError:
-                    continue
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+
+                    data = line[6:]
+                    if data == "[DONE]":
+                        return
+
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        token = delta.get("content", "")
+                        if token:
+                            yield token
+                    except json.JSONDecodeError:
+                        continue
+        except httpx.TimeoutException:
+            logger.warning(f"LLM API stream timeout")
+            return
 
     async def close(self):
         if self._client:

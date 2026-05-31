@@ -28,6 +28,7 @@ from .interrupt import InterruptManager
 from .hass import HAConnector
 from .agent import AgentExecutor
 from .config import config
+from .network import network_checker
 
 logger = logging.getLogger("butler.orchestrator")
 
@@ -236,6 +237,13 @@ class ConversationOrchestrator:
             route.intent, {"user": self.session.user}
         )
 
+        # 检测网络状态并通知客户端 (非阻塞, 带缓存)
+        try:
+            online = await network_checker.check()
+        except Exception:
+            online = True
+        await self.session.send_json({"type": "network_status", "online": online})
+
         # 发送 LLM 开始信号 (流式字幕)
         await self.session.send_json({"type": "llm_start"})
 
@@ -321,7 +329,10 @@ class ConversationOrchestrator:
                 logger.error(f"[{self.device_id}] TTS worker error: {e}")
 
     async def _tts_process(self, sentence: str):
-        """实际执行 TTS 合成与发送。"""
+        """实际执行 TTS 合成与发送。
+
+        自动检测网络状态: 离线时跳过 EdgeTTS, 直接使用 macOS say。
+        """
         if not sentence.strip():
             return
         if self.interrupt.is_set(self.device_id):
@@ -364,15 +375,28 @@ class ConversationOrchestrator:
         logger.debug(f"[{self.device_id}] TTS streamed {chunk_count} chunks for: {sentence[:50]}")
 
     async def _say(self, text: str):
-        """直接播报一段文本 (不用 LLM)。使用流式 TTS 获得更低延迟。"""
+        """直接播报一段文本 (不用 LLM)。使用流式 TTS 获得更低延迟。
+
+        TTS 引擎已内置分层降级: Cache → EdgeTTS → macOS say,
+        无需在此处检测网络状态。
+        """
         if not text:
             return
         if self.interrupt.is_set(self.device_id):
             return
         if self.session.is_speaking:
-            return
+            # 正在播报中, 等待前一段播完 (最多 5s)
+            wait_start = time.time()
+            while self.session.is_speaking:
+                if time.time() - wait_start > 5:
+                    logger.warning(f"[{self.device_id}] _say wait timeout")
+                    self.session.is_speaking = False
+                    break
+                await asyncio.sleep(0.1)
+            if self.interrupt.is_set(self.device_id):
+                return
 
-        # 发送文本用于客户端显示
+        # 发送文本用于客户端显示 (先于 TTS, 让用户立即看到文字)
         await self.session.send_json({"type": "llm_start", "text": text})
 
         self.session.is_speaking = True
@@ -401,33 +425,56 @@ class ConversationOrchestrator:
         try:
             # 解析实体和设备
             text = route.text
-            room = route.params.get("room", "") if route.params else ""
+            # route.params 是 tuple (来自正则 match.groups()), 不是 dict
+            # 例如 "打开台灯" → ("打开", "台", "灯")
+            room = ""
 
+            # 刷新实体列表
             entities = await self.hass.refresh_entities()
-            room_entities = [e for e in entities if not room or room in e.area]
 
-            # 路由级命令解析
-            from .hass import extract_command
-            cmd = extract_command(text, room)
+            # 场景命令
+            if route.action.startswith("scene_"):
+                scene_map = {
+                    "scene_leave": "离家",
+                    "scene_arrive": "回家",
+                    "scene_sleep": "睡眠",
+                    "scene_movie": "观影",
+                }
+                scene_name = scene_map.get(route.action, route.action)
+                return await self._hass_scene(scene_name)
 
-            if not cmd or not cmd.get("entities"):
-                action = route.action
-                if action.startswith("light_"):
-                    cmd = {"action": "turn_on" if "on" in action else "turn_off",
-                           "entities": [], "params": {}}
-                elif action.startswith("scene_"):
-                    scene_map = {
-                        "scene_leave": "离家",
-                        "scene_arrive": "回家",
-                        "scene_sleep": "睡眠",
-                        "scene_movie": "观影",
-                    }
-                    scene_name = scene_map.get(action, action)
-                    return await self._hass_scene(scene_name)
-                else:
-                    return "好的"
+            # 使用 EntityAliasMatcher.parse_command 解析命令
+            cmd = self.hass.matcher.parse_command(text, room)
 
-            return await self.hass.execute_command(cmd)
+            if cmd and cmd.get("entities"):
+                return await self.hass.execute_command(cmd)
+
+            # 命令没有匹配到实体 - 尝试简单操作
+            try:
+                action = cmd.get("action", "")
+                if not action:
+                    # 从 route action 推断
+                    is_on = any(w in text for w in ["打开", "开", "开启"])
+                    action = "turn_on" if is_on else "turn_off"
+
+                # 用 domain 过滤找设备
+                domain = cmd.get("domain", "")
+                if not domain:
+                    if any(w in text for w in ["灯", "灯光", "照明"]):
+                        domain = "light"
+                    elif any(w in text for w in ["空调", "冷气"]):
+                        domain = "climate"
+
+                # 找 domain 下第一个设备
+                for ent in entities:
+                    if ent.domain == domain:
+                        cmd = {"action": action, "entities": [ent.entity_id], "params": {}}
+                        return await self.hass.execute_command(cmd)
+
+            except Exception:
+                pass
+
+            return "没找到对应的设备"
 
         except Exception as e:
             logger.error(f"HASS error: {e}")
@@ -450,12 +497,39 @@ class ConversationOrchestrator:
             return "场景切换失败"
 
     async def _handle_query(self, route: RouteResult) -> str:
-        """处理简单查询 (时间/天气)。"""
+        """处理简单查询 (时间/天气/加密货币)。"""
         action = route.action
         if action == "time":
             return time.strftime("现在%H点%M分")
         elif action == "weather":
             return "今天晴, 23到30度"
+        elif action == "crypto_price":
+            from .crypto import CryptoPricer
+            pricer = CryptoPricer()
+            # 从文本中提取币名
+            text = route.text
+            coin = self._extract_coin_name(text)
+            if coin:
+                return await pricer.get_price(coin)
+            # 没识别到具体币种, 列出支持的
+            return await pricer.list_coins()
+        return ""
+
+    def _extract_coin_name(self, text: str) -> str:
+        """从查询文本中提取币种名称。"""
+        from .crypto import COIN_MAP
+        for cn_name in COIN_MAP:
+            if cn_name in text:
+                return cn_name
+        # 尝试拼音/缩写
+        words = text.replace("价格", " ").replace("行情", " ").replace("多少", " ").strip()
+        for w in words.split():
+            if len(w) >= 2 and w.isalpha():
+                # 可能是缩写
+                upper = w.upper()
+                for cn, sym in COIN_MAP.items():
+                    if sym.startswith(upper):
+                        return cn
         return ""
 
     async def _handle_system(self, text: str) -> str:
