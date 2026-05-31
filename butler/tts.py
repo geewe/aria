@@ -93,16 +93,54 @@ class EdgeTTS:
 
 
 class MacOSTTS:
-    """macOS say 命令 TTS (离线, 即时可用)."""
+    """macOS say 命令 TTS (离线, 本地引擎).
+
+    支持:
+    - AIFF 合成 (内置 say 命令)
+    - ffmpeg 转码为 MP3 (浏览器兼容)
+    - 常用短语缓存 (二次响应零延迟)
+    - 并发非阻塞执行
+    """
 
     def __init__(self):
-        self.voice = "Tingting"
+        self.voice = "Tingting"  # macOS 中文女声
+        self._cache: dict[str, bytes] = {}  # 预缓存
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._ffmpeg_ok = self._check_ffmpeg()
+
+    def _check_ffmpeg(self) -> bool:
+        """检查 ffmpeg 是否可用。"""
+        try:
+            r = subprocess.run(["ffmpeg", "-version"],
+                              capture_output=True, timeout=5)
+            return r.returncode == 0
+        except:
+            return False
+
+    @property
+    def cache_hit_rate(self) -> str:
+        total = self._cache_hits + self._cache_misses
+        if total == 0:
+            return "0%"
+        return f"{self._cache_hits * 100 // total}%"
 
     async def synthesize(self, text: str) -> Optional[bytes]:
+        """合成文本为 AIFF 音频。"""
+        if not text.strip():
+            return None
+
+        # 检查缓存
+        if text in self._cache:
+            self._cache_hits += 1
+            return self._cache[text]
+
+        self._cache_misses += 1
+
         loop = asyncio.get_event_loop()
         def _run():
             import uuid
-            out_path = f"/tmp/hermes_tts_{uuid.uuid4().hex}.aiff"
+            out_path = f"/tmp/aria_tts_{uuid.uuid4().hex}.aiff"
             try:
                 subprocess.run(["say", "-v", self.voice, "-o", out_path, text],
                                capture_output=True, timeout=30)
@@ -113,7 +151,76 @@ class MacOSTTS:
                 return None
             finally:
                 subprocess.run(["rm", "-f", out_path], capture_output=True)
-        return await loop.run_in_executor(None, _run)
+
+        data = await loop.run_in_executor(None, _run)
+
+        # 缓存短句
+        if data and len(text) < 50:
+            self._cache[text] = data
+
+        return data
+
+    async def synthesize_stream(self, text: str):
+        """流式输出 — AIFF 合成后转 MP3。
+
+        Yields:
+            (mp3_chunk, "mp3") — 单块 MP3 音频
+        """
+        aiff_data = await self.synthesize(text)
+        if not aiff_data:
+            return
+
+        # 检查 MP3 版本缓存
+        cache_key = f"mp3:{text}"
+        if cache_key in self._cache:
+            yield self._cache[cache_key], "mp3"
+            return
+
+        if not self._ffmpeg_ok:
+            # ffmpeg 不可用, 直接输出 AIFF
+            yield aiff_data, "aiff"
+            return
+
+        # 写入临时文件, ffmpeg 转码
+        import uuid
+        aiff_path = f"/tmp/aria_tts_{uuid.uuid4().hex}.aiff"
+        mp3_path = f"/tmp/aria_tts_{uuid.uuid4().hex}.mp3"
+
+        try:
+            # 写入 AIFF
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: open(aiff_path, "wb").write(aiff_data))
+
+            # ffmpeg 转 MP3 (64kbps, 兼容性好)
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", aiff_path,
+                "-codec:a", "libmp3lame", "-b:a", "64k",
+                "-f", "mp3", mp3_path,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            await proc.wait()
+
+            if os.path.exists(mp3_path):
+                def _read_mp3():
+                    with open(mp3_path, "rb") as f:
+                        return f.read()
+                mp3_data = await loop.run_in_executor(None, _read_mp3)
+
+                # 缓存
+                if mp3_data and len(text) < 50:
+                    self._cache[cache_key] = mp3_data
+
+                yield mp3_data, "mp3"
+                return
+        except Exception as e:
+            logger.error(f"MacOSTTS ffmpeg error: {e}")
+        finally:
+            for p in [aiff_path, mp3_path]:
+                try: os.remove(p)
+                except: pass
+
+        # 兜底
+        yield aiff_data, "aiff"
 
 
 class TTSEngine:
