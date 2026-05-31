@@ -127,57 +127,155 @@ class PorcupineEngine:
 # ── VAD 能量触发器 ──────────────────────────────────────────────
 
 class VADTrigger:
-    """能量阈值 VAD — 检测语音活动 (非唤醒词)。
+    """智能语音活动检测 — 能量阈值 + 频谱分析。
 
-    通过 RMS 能量检测用户开始说话, 作为 wake-word-less 备选方案。
+    双层检测:
+      1. 能量阈值 (RMS): 检测声音活动
+      2. 频谱分析 (FFT): 区分人声 vs 噪声
+
+    人声特征: 300-3400Hz 频段能量占比 > 40%
+    噪声特征: 全频段均匀分布
+
+    自动校准: 采集环境音自动设置阈值, 无需手动配置。
     """
 
     def __init__(
         self,
-        energy_threshold: float = 0.06,
-        min_speech_frames: int = 6,   # ~180ms @ 30ms
+        energy_threshold: Optional[float] = None,  # None = 自动校准
+        speech_band_ratio: float = 0.50,  # 人声频段能量占比阈值 (0.5 = 50%)
+        min_speech_frames: int = 6,       # ~180ms @ 30ms
         cooldown_sec: float = 3.0,
         sample_rate: int = 16000,
         frame_ms: int = 30,
+        auto_calibrate: bool = True,
     ):
-        self.energy_threshold = energy_threshold
+        self.energy_threshold = energy_threshold or 0.04
+        self.speech_band_ratio = speech_band_ratio
         self.min_speech_frames = min_speech_frames
         self.cooldown_sec = cooldown_sec
         self.sample_rate = sample_rate
         self.frame_size = int(sample_rate * frame_ms / 1000)
+        self.auto_calibrate = auto_calibrate
 
         self._last_trigger = 0.0
         self._speech_frames = 0
         self._is_speaking = False
+        self._noise_floor = None  # 环境噪音基准
+        self._calibrated = False
+
+        # FFT 频率索引: 人声频段 300-3400Hz
+        self._speech_bin_start = int(300 / sample_rate * self.frame_size)
+        self._speech_bin_end = int(3400 / sample_rate * self.frame_size)
 
     def reset(self) -> None:
         self._speech_frames = 0
         self._is_speaking = False
 
-    @property
-    def frame_length(self) -> int:
-        return self.frame_size
+    def _is_human_speech(self, pcm_bytes: bytes) -> tuple[bool, float]:
+        """通过频谱分析判断是否为人声。返回 (是人声, 频段能量比)。
+
+        人声特征:
+          1. RMS 能量超过阈值
+          2. 300-3400Hz 频段能量占比 > 50%
+          3. 谱丰度 (spectral crest): 能量集中在少数频段 (谐波结构)
+        """
+        if len(pcm_bytes) < self.frame_size * 2:
+            return False, 0.0
+
+        # PCM16 → float
+        samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+        # 1. RMS 能量
+        rms = np.sqrt(np.mean(samples ** 2))
+
+        # 2. 频谱分析 (FFT)
+        windowed = samples * np.hanning(len(samples))
+        spectrum = np.abs(np.fft.rfft(windowed)) + 1e-10
+        
+        total_energy = np.sum(spectrum)
+        speech_energy = np.sum(
+            spectrum[self._speech_bin_start:self._speech_bin_end]
+        )
+        speech_ratio = speech_energy / total_energy
+
+        # 3. 谱丰度 (spectral crest) — 能量集中度
+        #    人声: 高谱丰度 (谐波峰), 噪声: 低谱丰度 (均匀分布)
+        spectral_crest = np.max(spectrum) / np.mean(spectrum)
+
+        # 人声判断: 能量足够 + 人声频段占比高 + 谐波结构
+        is_speech = (
+            rms > self.energy_threshold
+            and speech_ratio > self.speech_band_ratio
+            and spectral_crest > 2.0  # 噪声的 crest 通常 < 2.0
+        )
+
+        return is_speech, speech_ratio
+
+    def calibrate(self, duration: float = 2.0) -> float:
+        """自动校准: 采集环境噪音, 设置能量阈值。"""
+        import sounddevice as sd
+
+        logger.info("🎤 校准 VAD 中 (请保持安静, 采集 %d 秒环境音)...", duration)
+
+        # 采集环境音
+        samples = sd.rec(
+            int(duration * self.sample_rate),
+            samplerate=self.sample_rate,
+            channels=1, dtype="float32",
+        )
+        sd.wait()
+
+        # 计算环境噪音 RMS
+        rms_values = []
+        for i in range(0, len(samples) - self.frame_size, self.frame_size):
+            frame = samples[i:i + self.frame_size]
+            rms = np.sqrt(np.mean(frame ** 2))
+            rms_values.append(rms)
+
+        noise_floor = np.median(rms_values)
+        # 阈值 = 环境噪音 × 3 (至少 0.02)
+        calibrated = max(noise_floor * 3.5, 0.02)
+        # 但不超过 0.15 (避免在安静环境下阈值过高)
+        calibrated = min(calibrated, 0.15)
+
+        self.energy_threshold = calibrated
+        self._noise_floor = noise_floor
+        self._calibrated = True
+
+        logger.info(
+            "✅ VAD 校准完成: 环境噪音=%.6f, 阈值=%.4f",
+            noise_floor, calibrated,
+        )
+        return calibrated
 
     def feed(self, pcm_bytes: bytes) -> bool:
-        """处理一帧 PCM16 音频, 返回是否检测到语音活动 (考虑冷却)。"""
+        """处理一帧 PCM16 音频, 返回是否检测到语音活动。"""
         if len(pcm_bytes) < 2:
             return False
 
-        try:
-            samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            rms = np.sqrt(np.mean(samples ** 2))
-        except Exception:
-            rms = 0.0
+        # 自动校准 (首次检测到有声音时)
+        if self.auto_calibrate and not self._calibrated:
+            try:
+                self.calibrate()
+            except Exception as e:
+                logger.warning(f"VAD 校准失败: {e}")
+                self._calibrated = True  # 只试一次
 
         now = time.time()
 
-        if rms > self.energy_threshold:
+        # 频谱分析判断是否为人声
+        is_speech, speech_ratio = self._is_human_speech(pcm_bytes)
+
+        if is_speech:
             self._speech_frames += 1
             if not self._is_speaking and self._speech_frames >= self.min_speech_frames:
                 self._is_speaking = True
                 if now - self._last_trigger > self.cooldown_sec:
                     self._last_trigger = now
-                    logger.info(f"VAD trigger! (energy={rms:.4f})")
+                    logger.debug(
+                        "VAD trigger! (energy=%.4f, speech_ratio=%.2f)",
+                        self._speech_frames, speech_ratio,
+                    )
                     return True
         else:
             self._speech_frames = 0
@@ -185,22 +283,17 @@ class VADTrigger:
 
         return False
 
-    def calibrate(self, silence_threshold: float = 0.01) -> float:
-        """自动校准能量阈值 (根据环境噪音)。"""
-        import sounddevice as sd
-        logger.info("校准 VAD 阈值中 (采集 2 秒环境音)...")
-        duration = 2.0
-        samples = sd.rec(
-            int(duration * self.sample_rate),
-            samplerate=self.sample_rate,
-            channels=1, dtype="float32",
-        )
-        sd.wait()
-        rms = np.sqrt(np.mean(samples ** 2))
-        calibrated = max(rms * 3, silence_threshold)
-        logger.info(f"环境噪音 RMS={rms:.6f}, 推荐阈值={calibrated:.4f}")
-        self.energy_threshold = calibrated
-        return calibrated
+    @property
+    def frame_length(self) -> int:
+        return self.frame_size
+
+    @property
+    def is_calibrated(self) -> bool:
+        return self._calibrated
+
+    @property
+    def noise_floor(self) -> Optional[float]:
+        return self._noise_floor
 
 
 # ── 统一唤醒引擎 ────────────────────────────────────────────────

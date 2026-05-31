@@ -18,3 +18,4 @@ key.pem
 *.mp3
 __pycache__
 config.yaml
+models/

@@ -1,7 +1,7 @@
 """Aria 浮动覆盖层 — 类 Siri 式对话视图。
 
 使用 AppKit (pyobjc) 创建原生 macOS 浮动窗口。
-通过 Foundation.NSRunLoop 主线程操作 UI。
+通过 NSTimer 在主线程更新 UI。
 """
 
 from __future__ import annotations
@@ -25,34 +25,51 @@ TEXT = AppKit.NSColor.whiteColor()
 DIM = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.55, 0.55, 0.62, 1.0)
 
 
-# ── 辅助: 在主线程执行 UI 操作 ──────────────────────────────────
+# ── 窗口代理: 处理动画定时器 ────────────────────────────────────
 
-def _main_thread(fn, *args, delay=0.0):
-    """在 AppKit 主线程上同步执行函数。"""
-    if threading.current_thread() is threading.main_thread():
-        return fn(*args)
-    result = [None, threading.Event()]
+class OverlayDelegate(Foundation.NSObject):
+    """处理波形动画定时器的 ObjC 代理。"""
 
-    def wrapper():
-        try:
-            result[0] = fn(*args)
-        except Exception as e:
-            result[0] = e
-        finally:
-            result[1].set()
+    def initWithBars_(self, bars):
+        import objc
+        self = objc.super(OverlayDelegate, self).init()
+        if self:
+            self._bars = bars
+            self._phase = 0.0
+            self._timer = None
+            self._running = False
+        return self
 
-    if delay > 0:
-        Foundation.NSObject.performSelector_withObject_afterDelay_(
-            wrapper, None, delay
+    def startAnimation(self):
+        """启动波形动画。"""
+        self.stopAnimation()
+        self._phase = 0.0
+        self._running = True
+        self._timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1 / 30, self, self._updateWave_, None, True
         )
-    else:
-        Foundation.NSObject.performSelectorOnMainThread_withObject_waitUntilDone_(
-            wrapper, None, True
+        Foundation.NSRunLoop.currentRunLoop().addTimer_forMode_(
+            self._timer, Foundation.NSRunLoopCommonModes
         )
-    result[1].wait()
-    if isinstance(result[0], Exception):
-        raise result[0]
-    return result[0]
+
+    def stopAnimation(self):
+        """停止波形动画。"""
+        self._running = False
+        if self._timer:
+            self._timer.invalidate()
+            self._timer = None
+        for bar in self._bars:
+            bar.setFrameSize_(Foundation.NSMakeSize(4, 4))
+            bar.setAlphaValue_(0.5)
+
+    def _updateWave_(self, timer):
+        """NSTimer 回调: 更新波形。"""
+        if not self._running:
+            return
+        self._phase += 0.15
+        for i, bar in enumerate(self._bars):
+            h = abs(math.sin(self._phase + i * 0.4)) * 22 + 4
+            bar.setFrameSize_(Foundation.NSMakeSize(4, h))
 
 
 # ── 覆盖窗口 ────────────────────────────────────────────────────
@@ -69,9 +86,7 @@ class OverlayWindow:
         self._text: Optional[AppKit.NSTextField] = None
         self._subtext: Optional[AppKit.NSTextField] = None
         self._waves: list[AppKit.NSView] = []
-        self._wave_running = False
-        self._wave_thread: Optional[threading.Thread] = None
-        self._visible = False
+        self._delegate: Optional[OverlayDelegate] = None
 
     def _build(self):
         """懒创建窗口 (必须在主线程调用)。"""
@@ -108,7 +123,12 @@ class OverlayWindow:
         cv.setWantsLayer_(True)
         cv.layer().setCornerRadius_(16)
         cv.layer().setMasksToBounds_(True)
-        cv.layer().setBackgroundColor_(BG.CGColor())
+        # Use rgba directly
+        cv.layer().setBackgroundColor_(
+            AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                0.08, 0.10, 0.15, 0.88
+            ).CGColor()
+        )
 
         # 文字
         self._text = self._label("🎤 聆听中...", 20, 40, self.W - 40, 30, 18, bold=True)
@@ -121,18 +141,24 @@ class OverlayWindow:
         # 波形条
         self._build_waves(cv)
 
+        # 动画代理
+        self._delegate = OverlayDelegate.alloc().initWithBars_(self._waves)
+
     def _build_waves(self, cv):
         """创建波形条。"""
         n = 28
         bw, sp = 4, 3
         tw = n * (bw + sp) - sp
         sx = (self.W - tw) / 2
+        accent_cg = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            0.2, 0.6, 0.7, 1.0
+        ).CGColor()
         for i in range(n):
             r = Foundation.NSMakeRect(sx + i * (bw + sp), 82, bw, 4)
             bar = AppKit.NSView.alloc().initWithFrame_(r)
             bar.setWantsLayer_(True)
             bar.layer().setCornerRadius_(2)
-            bar.layer().setBackgroundColor_(ACCENT.CGColor())
+            bar.layer().setBackgroundColor_(accent_cg)
             bar.setAlphaValue_(0.5)
             cv.addSubview_(bar)
             self._waves.append(bar)
@@ -153,57 +179,39 @@ class OverlayWindow:
         ))
         return lbl
 
-    # ── 波形动画 ──────────────────────────────────────────────
-
-    def _wave_loop(self):
-        """波形动画线程。"""
-        phase = 0.0
-        while self._wave_running:
-            phase += 0.15
-            for i, bar in enumerate(self._waves):
-                h = abs(math.sin(phase + i * 0.4)) * 22 + 4
-                self._set_bar(bar, h)
-            time.sleep(1 / 30)
-
-    def _set_bar(self, bar, height):
-        """在主线程更新波形高度。"""
-        Foundation.NSObject.performSelectorOnMainThread_withObject_waitUntilDone_(
-            lambda: bar.setFrameSize_(Foundation.NSMakeSize(4, height)),
-            None,
-            False,
-        )
-
     # ── 公开 API ──────────────────────────────────────────────
 
     def show_listening(self, text: str = ""):
         """显示聆听状态。"""
-        _main_thread(self._build)
+        self._build()
         if not self._window:
             return
-        self._visible = True
         self._text.setStringValue_("🎤 聆听中...")
         self._subtext.setStringValue_(text or "")
         self._resize(self.H_LISTEN)
         self._window.setIgnoresMouseEvents_(True)
         self._window.orderFront_(None)
-        self._start_wave()
+        if self._delegate:
+            self._delegate.startAnimation()
 
     def show_thinking(self):
         """显示思考状态。"""
-        _main_thread(self._build)
+        self._build()
         if not self._window:
             return
-        self._stop_wave()
+        if self._delegate:
+            self._delegate.stopAnimation()
         self._text.setStringValue_("⏳ 思考中...")
         self._subtext.setStringValue_("")
         self._resize(self.H_LISTEN)
 
     def show_response(self, text: str):
         """显示回复。"""
-        _main_thread(self._build)
+        self._build()
         if not self._window:
             return
-        self._stop_wave()
+        if self._delegate:
+            self._delegate.stopAnimation()
         display = text[:200].replace("\n", "  ")
         self._text.setStringValue_("💬 Aria")
         self._subtext.setStringValue_(display)
@@ -215,29 +223,18 @@ class OverlayWindow:
 
     def hide(self):
         """隐藏窗口。"""
-        _main_thread(self._hide_inner)
-
-    def _hide_inner(self):
+        self._build()
+        if self._delegate:
+            self._delegate.stopAnimation()
         if self._window:
-            self._stop_wave()
             self._window.orderOut_(None)
-        self._visible = False
 
     def _delayed_hide(self, delay: float):
         time.sleep(delay)
-        self.hide()
-
-    def _start_wave(self):
-        self._stop_wave()
-        self._wave_running = True
-        self._wave_thread = threading.Thread(target=self._wave_loop, daemon=True)
-        self._wave_thread.start()
-
-    def _stop_wave(self):
-        self._wave_running = False
-        for bar in self._waves:
-            bar.setFrameSize_(Foundation.NSMakeSize(4, 4))
-            bar.setAlphaValue_(0.5)
+        # 需要在主线程执行
+        self._window.performSelectorOnMainThread_withObject_waitUntilDone_(
+            self._window.orderOut_, None, False
+        )
 
     def _resize(self, h: float):
         if not self._window:
