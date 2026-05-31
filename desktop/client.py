@@ -196,12 +196,11 @@ class AriaDesktopApp(rumps.App):
         logger.info("Wake word stopped")
 
     def _on_wake_detected(self):
-        """唤醒回调 — 在主线程执行。"""
+        """唤醒检测 - 忽略重复触发"""
+        if self._is_listening or not self._wake_active:
+            return
         logger.info("🚀 Wake word detected!")
-        rumps.notification("Aria", "🎤 检测到人声", "正在聆听...")
         self._start_listening()
-
-    # ── 手动对话 ──────────────────────────────────────────────
 
     def _manual_trigger(self, sender):
         """手动触发对话。"""
@@ -209,21 +208,23 @@ class AriaDesktopApp(rumps.App):
         self._start_listening()
 
     def _start_listening(self):
-        """开始麦克风采集并发送到服务器。"""
+        """VAD触发后: 停止唤醒监听, 开始对话录音"""
         if self._is_listening:
             return
         self._is_listening = True
+        self._send({"type": "wake_audio_stop"})
         self._update_status("🎤 聆听中")
-        self._send({"type": "wake_audio_start"})
         self._show_overlay("listening")
+        self._speech_started = True
+        self._send({"type": "vad", "state": "speech_start"})
         threading.Thread(target=self._capture_audio, daemon=True).start()
 
     def _capture_audio(self):
-        """采集麦克风并发送 (后台线程)。"""
+        """采集麦克风并发送到对话管线 (后台线程)"""
         import sounddevice as sd
         import numpy as np
 
-        frame_len = 512
+        frame_len = 480
         sample_rate = 16000
 
         def callback(indata, frames, time_info, status):
@@ -237,51 +238,36 @@ class AriaDesktopApp(rumps.App):
                 samplerate=sample_rate, blocksize=frame_len,
                 channels=1, dtype="float32", callback=callback,
             ):
-                while self._is_listening:
+                for _ in range(150):
                     time.sleep(0.1)
+                    if not self._is_listening:
+                        break
         except Exception as e:
-            logger.error(f"Audio capture error: {e}")
-            self._stop_listening()
+            logger.error(f"音频采集错误: {e}")
+        finally:
+            if self._speech_started:
+                self._send({"type": "vad", "state": "speech_end"})
+                self._speech_started = False
+            self._is_listening = False
 
     def _stop_listening(self):
-        """停止监听。"""
+        """停止对话录音"""
         if not self._is_listening:
             return
         self._is_listening = False
-        self._send({"type": "wake_audio_stop"})
+        self._update_status("Aria")
         self._show_overlay("hide")
 
-    # ── 覆盖层 ────────────────────────────────────────────────
-
-    def _show_overlay(self, mode: str, text: str = ""):
-        """通过 NSRunLoop 在主线程显示覆盖层。"""
-        if not hasattr(self, '_overlay_shown'):
-            self._overlay_shown = False
-
-        try:
-            from desktop.overlay import show
-            # AppKit 全局阻塞队列: 在主线程执行
-            import Foundation
-            Foundation.NSObject.performSelectorOnMainThread_withObject_waitUntilDone_(
-                lambda: show(mode, text), None, False
-            )
-        except Exception as e:
-            logger.warning(f"Overlay error: {e}")
-
     def _show_response(self, text: str):
-        """显示回复并自动关闭。"""
+        """显示回复并自动关闭, 之后重新进入唤醒模式"""
         self._is_listening = False
         self._show_overlay("response", text)
-        self._update_status("🔊 Aria")
-        # 3 秒后恢复
+        self._update_status("Aria")
         def delayed_restart():
-            time.sleep(3)
+            time.sleep(2)
             if self._wake_active:
                 self._start_wake()
         threading.Thread(target=delayed_restart, daemon=True).start()
-
-    # ── UI ─────────────────────────────────────────────────────
-
     def _update_status(self, text: str):
         try:
             self._status_item.title = text
